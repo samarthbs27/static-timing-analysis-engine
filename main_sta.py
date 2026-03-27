@@ -6,10 +6,6 @@ import argparse
 import re
 
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
-
 @dataclass
 class Node:
     out_net: str
@@ -19,7 +15,7 @@ class Node:
     fanin:  List[Union["Node", str]] = field(default_factory=list)   # Node or "INPUT-x"
     fanout: List[Union["Node", str]] = field(default_factory=list)   # Node or "OUTPUT-y"
 
-    # STA fields (populated during Phase-2)
+    # Timing fields populated during STA.
     Cload:        float       = 0.0
     Tau_in:       List[float] = field(default_factory=list)   # input slews (ns)
     inp_arrival:  List[float] = field(default_factory=list)   # arrival at each input (ns)
@@ -54,22 +50,14 @@ class NLDMCell:
     input_cap:   float         = 0.0   # fF, from first input pin
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def parse_args() -> argparse.Namespace:
     import sys
 
-    # Normalize Unicode dashes to ASCII hyphens.
-    # PDFs and Word documents often substitute en-dash (U+2013) or em-dash
-    # (U+2014) for the double-hyphen "--" used in CLI flags.  This causes
-    # argparse to reject arguments like "–-read_ckt".  We fix sys.argv in
-    # place before argparse ever sees it.
+    # Normalize Unicode dashes copied from PDFs or docs before argparse sees them.
     def _fix_arg(arg: str) -> str:
         for bad in ("\u2014", "\u2013", "\u2012", "\u2011", "\u2010"):
             if arg.startswith(bad):
-                return "-" + arg[len(bad):]   # replace leading Unicode dash with one "-"
+                return "-" + arg[len(bad):]
         return arg
 
     sys.argv = [sys.argv[0]] + [_fix_arg(a) for a in sys.argv[1:]]
@@ -85,22 +73,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Phase 2: both --read_ckt and --read_nldm supplied  →  STA traversal
+    # Run STA when both the circuit and library are provided.
     if args.read_ckt is not None and args.read_nldm is not None:
         pi, po, nodes, gate_order = read_ckt(args.read_ckt)
         nldm = read_nldm(args.read_nldm)
         run_sta(pi, po, nodes, gate_order, nldm, Path("ckt_traversal.txt"))
         return
 
-    # Phase 1 Part A: only --read_ckt
+    # Write circuit structure details from the bench file alone.
     if args.read_ckt is not None:
         pi, po, nodes, gate_order = read_ckt(args.read_ckt)
         write_ckt_details(pi, po, nodes, gate_order, Path("ckt_details.txt"))
         return
 
-    # Phase 1 Part B: only --read_nldm  (+  --delays or --slews)
+    # Dump the requested LUT table from the library file alone.
     if args.read_nldm is not None:
-        if args.delays == args.slews:          # both True or both False
+        if args.delays == args.slews:
             raise SystemExit("ERROR: Use exactly one of --delays or --slews with --read_nldm")
         nldm = read_nldm(args.read_nldm)
         if args.delays:
@@ -111,10 +99,6 @@ def main() -> None:
 
     raise SystemExit("ERROR: Provide --read_ckt or --read_nldm")
 
-
-# ---------------------------------------------------------------------------
-# Phase-1 Part A: .bench parsing
-# ---------------------------------------------------------------------------
 
 def read_ckt(bench_path: Path):
     primary_inputs:  List[str] = []
@@ -151,7 +135,7 @@ def read_ckt(bench_path: Path):
             nodes[out_net] = node
             gate_order.append(out_net)
 
-    # Pass 2: wire fanin / fanout
+    # Second pass: connect fanin and fanout relationships.
     pi_set = set(primary_inputs)
     for out_net in gate_order:
         node = nodes[out_net]
@@ -210,21 +194,22 @@ def write_ckt_details(primary_inputs, primary_outputs, nodes, gate_order, out_pa
             w.write(f"{node.label()}: {', '.join(pi_first + rest)}\n")
 
 
-# ---------------------------------------------------------------------------
-# Phase-1 Part B: Liberty (.lib) parsing
-# ---------------------------------------------------------------------------
-
 def _find_matching_brace(s: str, open_pos: int) -> int:
     depth, in_str, esc = 0, False, False
     for i in range(open_pos, len(s)):
         ch = s[i]
         if in_str:
-            if esc:   esc = False
-            elif ch == "\\": esc = True
-            elif ch == '"':  in_str = False
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
         else:
-            if   ch == '"': in_str = True
-            elif ch == '{': depth += 1
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                depth += 1
             elif ch == '}':
                 depth -= 1
                 if depth == 0:
@@ -244,12 +229,12 @@ def _csv_to_floats(csv_str: str) -> List[float]:
 def read_nldm(lib_path: Path) -> Dict[str, NLDMCell]:
     text = lib_path.read_text(errors="ignore")
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    text = re.sub(r"//.*?$",    "", text, flags=re.MULTILINE)
+    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
 
     def parse_lut(table_block: str) -> LUT:
         m1 = re.search(r'index_1\s*\(\s*"([^"]+)"\s*\)\s*;', table_block, flags=re.DOTALL)
         m2 = re.search(r'index_2\s*\(\s*"([^"]+)"\s*\)\s*;', table_block, flags=re.DOTALL)
-        mv = re.search(r"values\s*\(\s*(.*?)\s*\)\s*;",       table_block, flags=re.DOTALL)
+        mv = re.search(r"values\s*\(\s*(.*?)\s*\)\s*;", table_block, flags=re.DOTALL)
         if not (m1 and m2 and mv):
             raise ValueError("Missing index_1, index_2, or values in LUT block")
 
@@ -270,9 +255,14 @@ def read_nldm(lib_path: Path) -> Dict[str, NLDMCell]:
             if len(r) != len(idx2):
                 raise ValueError(f"LUT cols ({len(r)}) != len(index_2) ({len(idx2)})")
 
-        return LUT(index_1_str=idx1_str, index_2_str=idx2_str,
-                   values_str_rows=values_str_rows,
-                   index_1=idx1, index_2=idx2, values=values)
+        return LUT(
+            index_1_str=idx1_str,
+            index_2_str=idx2_str,
+            values_str_rows=values_str_rows,
+            index_1=idx1,
+            index_2=idx2,
+            values=values,
+        )
 
     def extract_table(cell_block: str, table_name: str) -> Optional[LUT]:
         m = re.search(rf"\b{re.escape(table_name)}\b\s*\(", cell_block)
@@ -285,8 +275,7 @@ def read_nldm(lib_path: Path) -> Dict[str, NLDMCell]:
         return parse_lut(cell_block[ob + 1: cb])
 
     def extract_input_cap(cell_block: str) -> float:
-        """Return input capacitance (fF): check input pin blocks first, then cell-level attr."""
-        # Try per-pin capacitance inside an input pin block
+        """Return input capacitance (fF), preferring input pin blocks over cell-level data."""
         for pm in re.finditer(r'pin\s*\([^)]+\)\s*\{', cell_block):
             ob = cell_block.find("{", pm.end())
             if ob == -1:
@@ -297,7 +286,6 @@ def read_nldm(lib_path: Path) -> Dict[str, NLDMCell]:
                 cm = re.search(r'capacitance\s*:\s*([\d.e+\-]+)', pin_block)
                 if cm:
                     return float(cm.group(1))
-        # Fall back to cell-level  capacitance attribute
         cm = re.search(r'\bcapacitance\s*:\s*([\d.e+\-]+)', cell_block)
         if cm:
             return float(cm.group(1))
@@ -309,16 +297,16 @@ def read_nldm(lib_path: Path) -> Dict[str, NLDMCell]:
         m = re.search(r"\bcell\s*\(\s*([A-Za-z0-9_]+)\s*\)\s*\{", text[pos:])
         if not m:
             break
-        cell_name  = m.group(1)
+        cell_name = m.group(1)
         brace_open = pos + m.end() - 1
         brace_close = _find_matching_brace(text, brace_open)
-        cell_block  = text[brace_open + 1: brace_close]
+        cell_block = text[brace_open + 1: brace_close]
 
         cells[cell_name] = NLDMCell(
-            name        = cell_name,
-            cell_delay  = extract_table(cell_block, "cell_delay"),
-            output_slew = extract_table(cell_block, "output_slew"),
-            input_cap   = extract_input_cap(cell_block),
+            name=cell_name,
+            cell_delay=extract_table(cell_block, "cell_delay"),
+            output_slew=extract_table(cell_block, "output_slew"),
+            input_cap=extract_input_cap(cell_block),
         )
         pos = brace_close + 1
 
@@ -332,7 +320,7 @@ def write_delay_lut(nldm: Dict[str, NLDMCell], out_path: Path) -> None:
         for cell_name, cell in nldm.items():
             if cell.cell_delay is None:
                 continue
-            lut  = cell.cell_delay
+            lut = cell.cell_delay
             rows = lut.values_str_rows
             w.write(f"cell: {cell_name}\n")
             w.write(f"input slews: {lut.index_1_str}\n")
@@ -347,7 +335,7 @@ def write_slew_lut(nldm: Dict[str, NLDMCell], out_path: Path) -> None:
         for cell_name, cell in nldm.items():
             if cell.output_slew is None:
                 continue
-            lut  = cell.output_slew
+            lut = cell.output_slew
             rows = lut.values_str_rows
             w.write(f"cell: {cell_name}\n")
             w.write(f"input slews: {lut.index_1_str}\n")
@@ -357,42 +345,36 @@ def write_slew_lut(nldm: Dict[str, NLDMCell], out_path: Path) -> None:
                 w.write(f"{row};\n")
 
 
-# ---------------------------------------------------------------------------
-# Phase-2: Static Timing Analysis
-# ---------------------------------------------------------------------------
-
 def run_sta(primary_inputs, primary_outputs, nodes, gate_order,
             nldm: Dict[str, NLDMCell], out_path: Path) -> None:
 
     pi_set = set(primary_inputs)
 
-    # 1. Find inverter capacitance (for final-stage load)
+    # Use inverter input capacitance for primary-output loading.
     inv_cap = _find_inv_cap(nldm)
 
-    # 2. Manual topological sort (Kahn's algorithm — no graph libraries)
+    # Evaluate gates in topological order.
     topo_order = _topo_sort(nodes, gate_order)
 
-    # 3. Assign load capacitances
+    # Accumulate output load for each gate.
     _compute_cload(topo_order, nodes, nldm, inv_cap)
 
-    # 4. Forward traversal → arrival times & output slews
+    # Forward pass for arrivals and slews.
     circuit_delay_ns = _forward_traversal(topo_order, nodes, pi_set, nldm)
 
-    # 5. Backward traversal → required arrival times & gate slacks (ps)
+    # Backward pass for required times and slacks.
     _backward_traversal(topo_order, nodes, circuit_delay_ns)
 
-    # 6. Primary-input slacks (ps)
+    # Track primary-input slacks separately.
     pi_slacks = _compute_pi_slacks(primary_inputs, nodes, gate_order)
 
-    # 7. Critical path
+    # Recover the critical path from the worst endpoint.
     critical_path = _find_critical_path(primary_outputs, nodes, pi_slacks)
 
-    # 8. Write output
+    # Write the traversal report.
     _write_traversal(primary_inputs, primary_outputs, nodes, gate_order,
                      pi_slacks, circuit_delay_ns, critical_path, out_path)
 
-
-# ---- helpers ---------------------------------------------------------------
 
 def _find_inv_cap(nldm: Dict[str, NLDMCell]) -> float:
     """Return the input capacitance of the inverter/NOT cell."""
@@ -400,33 +382,30 @@ def _find_inv_cap(nldm: Dict[str, NLDMCell]) -> float:
         if "inv" in name.lower() or name.lower().startswith("not"):
             if cell.input_cap > 0:
                 return cell.input_cap
-    # Fallback: smallest positive input cap
+    # Fall back to the smallest available positive input capacitance.
     caps = [c.input_cap for c in nldm.values() if c.input_cap > 0]
     return min(caps) if caps else 1.0
 
 
 def _find_cell(gate_type: str, nldm: Dict[str, NLDMCell]) -> Optional[NLDMCell]:
     """
-    Find the best-matching NLDM cell for a bench gate_type.
-    Handles: NAND→NAND2_X1, NOR→NOR2_X1, AND→AND2_X1, OR→OR2_X1, NOT/INV→INV_X1, etc.
-    Priority: (1) exact match, (2) starts-with, with NOT/INV aliased together.
+    Return the closest NLDM cell match for a bench gate type.
+    Prefer exact matches, then prefix matches, with common aliases grouped together.
     """
     gt_lo = gate_type.lower()
 
-    # Build alias set: treat NOT and INV as equivalent
+    # Treat common synonyms as interchangeable.
     aliases = {gt_lo}
     if gt_lo in ("not", "inv", "inverter"):
         aliases.update(("not", "inv", "inverter"))
     if gt_lo in ("buf", "buff", "buffer"):
         aliases.update(("buf", "buff", "buffer"))
 
-    # 1. Exact case-insensitive match
     for name, c in nldm.items():
         if name.lower() in aliases:
             return c
 
-    # 2. Cell name starts with one of the aliases (handles "NAND2_X1" for "NAND")
-    #    Sort by name length ascending so we prefer the shortest (simplest) match
+    # Prefer the shortest prefix match such as "NAND2_X1" for "NAND".
     for name, c in sorted(nldm.items(), key=lambda x: len(x[0])):
         nl = name.lower()
         for alias in aliases:
@@ -439,14 +418,14 @@ def _find_cell(gate_type: str, nldm: Dict[str, NLDMCell]) -> Optional[NLDMCell]:
 def _lut_interp(lut: LUT, tau_ns: float, C_fF: float) -> float:
     """
     Bilinear interpolation on a 2-D LUT.
-    index_1 → input slew (ns), index_2 → load cap (fF).
+    index_1 maps input slew (ns), and index_2 maps load capacitance (fF).
     Values outside the table range are clamped to the boundary.
     """
     tau_vals = lut.index_1
     C_vals   = lut.index_2
     V        = lut.values
 
-    # Clamp query to table range
+    # Clamp the query to the tabulated range.
     tau_eff = max(tau_vals[0], min(tau_vals[-1], tau_ns))
     C_eff   = max(C_vals[0],   min(C_vals[-1],   C_fF))
 
@@ -459,15 +438,15 @@ def _lut_interp(lut: LUT, tau_ns: float, C_fF: float) -> float:
         return 0, 1
 
     i1, i2 = find_bracket(tau_vals, tau_eff)
-    j1, j2 = find_bracket(C_vals,   C_eff)
+    j1, j2 = find_bracket(C_vals, C_eff)
 
     tau1, tau2 = tau_vals[i1], tau_vals[i2]
-    C1,   C2   = C_vals[j1],   C_vals[j2]
-    v11, v12   = V[i1][j1],    V[i1][j2]
-    v21, v22   = V[i2][j1],    V[i2][j2]
+    C1,   C2   = C_vals[j1], C_vals[j2]
+    v11, v12   = V[i1][j1], V[i1][j2]
+    v21, v22   = V[i2][j1], V[i2][j2]
 
     d_tau = tau2 - tau1
-    d_C   = C2   - C1
+    d_C   = C2 - C1
 
     if d_tau == 0.0 and d_C == 0.0:
         return v11
@@ -476,23 +455,20 @@ def _lut_interp(lut: LUT, tau_ns: float, C_fF: float) -> float:
     if d_C == 0.0:
         return v11 + (v21 - v11) * (tau_eff - tau1) / d_tau
 
-    v = (v11 * (C2   - C_eff) * (tau2 - tau_eff)
-       + v12 * (C_eff - C1)   * (tau2 - tau_eff)
-       + v21 * (C2   - C_eff) * (tau_eff - tau1)
-       + v22 * (C_eff - C1)   * (tau_eff - tau1))
+    v = (v11 * (C2 - C_eff) * (tau2 - tau_eff)
+       + v12 * (C_eff - C1) * (tau2 - tau_eff)
+       + v21 * (C2 - C_eff) * (tau_eff - tau1)
+       + v22 * (C_eff - C1) * (tau_eff - tau1))
     return v / (d_C * d_tau)
 
 
 def _topo_sort(nodes: Dict[str, Node], gate_order: List[str]) -> List[str]:
-    """
-    Kahn's topological sort — implemented manually without any library.
-    Returns gate nets in topological (evaluation) order.
-    """
+    """Return gate nets in evaluation order using Kahn's algorithm."""
     in_deg: Dict[str, int] = {}
     for net in gate_order:
         in_deg[net] = sum(1 for fi in nodes[net].fanin if isinstance(fi, Node))
 
-    queue  = [net for net in gate_order if in_deg[net] == 0]
+    queue = [net for net in gate_order if in_deg[net] == 0]
     result: List[str] = []
 
     while queue:
@@ -505,18 +481,13 @@ def _topo_sort(nodes: Dict[str, Node], gate_order: List[str]) -> List[str]:
                     queue.append(fo.out_net)
 
     if len(result) != len(gate_order):
-        raise ValueError("Cycle detected in netlist — topological sort failed")
+        raise ValueError("Cycle detected in netlist - topological sort failed")
     return result
 
 
 def _compute_cload(topo_order: List[str], nodes: Dict[str, Node],
                    nldm: Dict[str, NLDMCell], inv_cap: float) -> None:
-    """
-    Assign Cload (fF) to every gate:
-      • Gates that only drive primary outputs → 4 × inv_cap (per PO output).
-      • All other gates → sum of input caps of their gate fanouts,
-        plus 4 × inv_cap for each PO fanout if mixed.
-    """
+    """Assign output load capacitance in fF for every gate."""
     for out_net in topo_order:
         gate = nodes[out_net]
 
@@ -525,7 +496,7 @@ def _compute_cload(topo_order: List[str], nodes: Dict[str, Node],
                         and fo.startswith("OUTPUT-")]
 
         if po_fanouts and not gate_fanouts:
-            # Final-stage gate: only drives primary outputs
+            # Final-stage gate driving only primary outputs.
             gate.Cload = 4.0 * inv_cap * len(po_fanouts)
         else:
             cload = 0.0
@@ -533,7 +504,7 @@ def _compute_cload(topo_order: List[str], nodes: Dict[str, Node],
                 cell = _find_cell(fo.gate_type, nldm)
                 if cell:
                     cload += cell.input_cap
-            # Mixed: also add PO load if any PO fanouts
+            # Include primary-output loading for mixed fanout cases.
             cload += 4.0 * inv_cap * len(po_fanouts)
             gate.Cload = cload
 
@@ -541,7 +512,7 @@ def _compute_cload(topo_order: List[str], nodes: Dict[str, Node],
 def _gate_delay_slew(gate: Node, nldm: Dict[str, NLDMCell]):
     """
     Return (delays, slews) in ns for each input path of gate.
-    For n > 2 inputs: scale LUT result by n/2  (spec assumption).
+    Scale LUT results by n/2 for gates with more than two inputs.
     """
     cell = _find_cell(gate.gate_type, nldm)
     if cell is None:
@@ -549,16 +520,16 @@ def _gate_delay_slew(gate: Node, nldm: Dict[str, NLDMCell]):
     if cell.cell_delay is None or cell.output_slew is None:
         raise ValueError(f"Cell '{cell.name}' missing delay or slew LUT")
 
-    n     = len(gate.fanin)
-    scale = (n / 2.0) if n > 2 else 1.0   # spec: scale only for n > 2
+    n = len(gate.fanin)
+    scale = (n / 2.0) if n > 2 else 1.0
 
     delays: List[float] = []
     slews:  List[float] = []
     for i in range(n):
         tau = gate.Tau_in[i]
-        C   = gate.Cload
-        delays.append(_lut_interp(cell.cell_delay,  tau, C) * scale)
-        slews.append( _lut_interp(cell.output_slew, tau, C) * scale)
+        C = gate.Cload
+        delays.append(_lut_interp(cell.cell_delay, tau, C) * scale)
+        slews.append(_lut_interp(cell.output_slew, tau, C) * scale)
 
     return delays, slews
 
@@ -569,7 +540,7 @@ def _forward_traversal(topo_order: List[str], nodes: Dict[str, Node],
     Forward STA pass.
     Populates: Tau_in, inp_arrival, cell_delays, cell_slews,
                outp_arrival, max_out_arrival, Tau_out for every gate.
-    Returns circuit delay (ns) = max arrival among final-stage outputs.
+    Returns circuit delay (ns) as the maximum arrival among final-stage outputs.
     """
     TAU_PI = 0.002   # 2 ps expressed in ns
     ARR_PI = 0.0     # primary inputs arrive at time 0
@@ -580,10 +551,10 @@ def _forward_traversal(topo_order: List[str], nodes: Dict[str, Node],
         gate.inp_arrival = []
 
         for fi in gate.fanin:
-            if isinstance(fi, str):          # PRIMARY INPUT
+            if isinstance(fi, str):
                 gate.Tau_in.append(TAU_PI)
                 gate.inp_arrival.append(ARR_PI)
-            else:                            # gate output
+            else:
                 gate.Tau_in.append(fi.Tau_out)
                 gate.inp_arrival.append(fi.max_out_arrival)
 
@@ -592,16 +563,15 @@ def _forward_traversal(topo_order: List[str], nodes: Dict[str, Node],
         gate.cell_slews    = slews
         gate.outp_arrival  = [gate.inp_arrival[i] + delays[i] for i in range(len(delays))]
 
-        # max: a_out = max_i(a_i + d_i)
         max_idx = 0
         for i in range(1, len(gate.outp_arrival)):
             if gate.outp_arrival[i] > gate.outp_arrival[max_idx]:
                 max_idx = i
 
         gate.max_out_arrival = gate.outp_arrival[max_idx]
-        gate.Tau_out         = slews[max_idx]   # τ_out = argmax slew
+        gate.Tau_out         = slews[max_idx]
 
-    # Circuit delay = max arrival at all primary outputs
+    # Circuit delay is the maximum arrival time at any primary output.
     circuit_delay = 0.0
     for out_net in topo_order:
         gate = nodes[out_net]
@@ -618,7 +588,7 @@ def _backward_traversal(topo_order: List[str], nodes: Dict[str, Node],
     """
     Backward STA pass.
     Populates: req_arrival (ns) and slack (ps) for every gate.
-    Required arrival time = 1.1 × circuit_delay at every primary output.
+    Primary outputs use a required arrival time of 1.1x the circuit delay.
     """
     req_time = 1.1 * circuit_delay_ns
 
@@ -630,12 +600,10 @@ def _backward_traversal(topo_order: List[str], nodes: Dict[str, Node],
                            for fo in gate.fanout)
 
         if has_po and not gate_fanouts:
-            # Final-stage gate: required time set directly
+            # Final-stage gate driving only a primary output.
             gate.req_arrival = req_time
 
         else:
-            # req_arrival = min over fanout gates of
-            #               (fanout.req_arrival − fanout.cell_delays[idx connecting to this gate])
             min_req: Optional[float] = None
 
             for fo in gate_fanouts:
@@ -645,22 +613,21 @@ def _backward_traversal(topo_order: List[str], nodes: Dict[str, Node],
                         if min_req is None or r < min_req:
                             min_req = r
 
-            # If also drives a PO directly, that boundary must be respected too
+            # Also respect the primary-output boundary when present.
             if has_po:
                 if min_req is None or req_time < min_req:
                     min_req = req_time
 
             gate.req_arrival = min_req if min_req is not None else req_time
 
-        gate.slack = (gate.req_arrival - gate.max_out_arrival) * 1000.0  # → ps
+        gate.slack = (gate.req_arrival - gate.max_out_arrival) * 1000.0
 
 
 def _compute_pi_slacks(primary_inputs: List[str], nodes: Dict[str, Node],
                        gate_order: List[str]) -> Dict[str, float]:
     """
     Compute slack (ps) for each primary input.
-    Slack = min over all fanout gates of (gate.req_arrival − gate.cell_delays[i]) × 1000,
-    since arrival time at every PI is 0.
+    Slack is based on the tightest required time among the gates each input feeds.
     """
     pi_slacks: Dict[str, float] = {}
 
@@ -683,10 +650,10 @@ def _compute_pi_slacks(primary_inputs: List[str], nodes: Dict[str, Node],
 def _find_critical_path(primary_outputs: List[str], nodes: Dict[str, Node],
                         pi_slacks: Dict[str, float]) -> List[str]:
     """
-    Trace critical path from the PO with minimum slack back to the PI with minimum slack.
-    Returns list of labels from PI to PO.
+    Trace the critical path from the worst primary output back to a primary input.
+    Returns labels from PI to PO.
     """
-    # Find PO with minimum slack (PO slack == driving gate slack)
+    # Start from the primary output with the least slack.
     min_slack: Optional[float] = None
     start_net: Optional[str]   = None
     for po_net in primary_outputs:
@@ -699,14 +666,12 @@ def _find_critical_path(primary_outputs: List[str], nodes: Dict[str, Node],
     if start_net is None:
         return []
 
-    # Trace backward, collecting labels in reverse order
     rev_path: List[str] = [f"OUTPUT-{start_net}"]
     current = nodes[start_net]
 
     while True:
         rev_path.append(current.label())
 
-        # Collect all fanin candidates with their slacks
         candidates = []
         for fi in current.fanin:
             if isinstance(fi, Node):
@@ -722,10 +687,10 @@ def _find_critical_path(primary_outputs: List[str], nodes: Dict[str, Node],
         _, _, typ, fi = best
 
         if typ == "pi":
-            rev_path.append(fi)   # "INPUT-x"
+            rev_path.append(fi)
             break
         else:
-            current = fi          # type: Node
+            current = fi
 
     rev_path.reverse()
     return rev_path
@@ -739,18 +704,15 @@ def _write_traversal(primary_inputs, primary_outputs, nodes, gate_order,
         w.write(f"Circuit delay: {delay_ps:.6g} ps\n")
         w.write("\nGate slacks:\n")
 
-        # Primary inputs
         for pi_net in primary_inputs:
             label = f"INPUT-{pi_net}"
             w.write(f"{label}: {pi_slacks.get(label, 0.0):.6g} ps\n")
 
-        # Primary outputs  (slack == slack of driving gate)
         for po_net in primary_outputs:
             label = f"OUTPUT-{po_net}"
             slack = nodes[po_net].slack if po_net in nodes else 0.0
             w.write(f"{label}: {slack:.6g} ps\n")
 
-        # Internal gates (in original bench order)
         for out_net in gate_order:
             node = nodes[out_net]
             w.write(f"{node.label()}: {node.slack:.6g} ps\n")

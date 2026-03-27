@@ -21,7 +21,7 @@ critical path using bilinear LUT interpolation.
 
 ## Usage
 
-### Phase 1A — Circuit details
+### Circuit details
 
 Parse a netlist and print gate counts, fanin, and fanout lists.
 
@@ -31,7 +31,7 @@ python main_sta.py --read_ckt <circuit.bench>
 
 Output written to `ckt_details.txt`.
 
-### Phase 1B — Library LUT inspection
+### Library LUT inspection
 
 Print the delay or slew look-up tables from a Liberty file.
 
@@ -42,7 +42,7 @@ python main_sta.py --read_nldm <library.lib> --slews
 
 Output written to `delay_LUT.txt` or `slew_LUT.txt` respectively.
 
-### Phase 2 — Full Static Timing Analysis
+### Full Static Timing Analysis
 
 Run STA with both a netlist and a Liberty library.
 
