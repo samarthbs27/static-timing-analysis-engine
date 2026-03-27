@@ -1,6 +1,6 @@
 # Static Timing Analysis (STA) Tool
 
-A command-line Static Timing Analysis engine written in pure Python (stdlib only).
+A command-line Static Timing Analysis engine written in pure Python (stdlib only, no graph libraries used).
 It parses a gate-level netlist (`.bench`) and an NLDM Liberty library (`.lib`),
 then computes arrival times, slews, required arrival times, slack values, and the
 critical path using bilinear LUT interpolation.
