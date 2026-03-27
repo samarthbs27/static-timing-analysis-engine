@@ -1,0 +1,21 @@
+# Virtual environment
+venv_3.7/
+venv/
+.venv/
+
+# Generated output files
+ckt_details.txt
+ckt_details_*.txt
+ckt_traversal.txt
+ckt_traversal_*.txt
+delay_LUT.txt
+slew_LUT.txt
+tmp_*.txt
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# OS files
+.DS_Store
+Thumbs.db
